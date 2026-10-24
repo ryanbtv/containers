@@ -1,0 +1,427 @@
+name: Build & publish container images
+
+# Builds selected images under `images/*/Dockerfile`, scans with Trivy, and
+# (outside of a pull request) publishes them to ghcr.io/<owner>/<image-name>.
+#
+# `images/openchamber` has no Dockerfile of its own, so the matrix skips it.
+# It is built by the dedicated `openchamber` job below, which checks the
+# upstream repository out at a pinned ref and builds with that checkout as the
+# context. See images/openchamber/README.md.
+#
+# Triggers:
+#   push to main      build + scan + push, only changed image directories
+#   pull_request      build + scan only, only changed image directories
+#   workflow_dispatch force build + scan + push, one image or all if blank
+# Events are unfiltered: local Git selection avoids changed-file filter limits,
+# and required discover/build-summary checks always report on pull requests.
+# Shared workflow/selector edits intentionally select every image.
+# No weekly rebuild: unchanged images skip. Force a manual rebuild to refresh
+# base images or scan against newer vulnerability data. See README.md.
+#
+# Security: this repository is public. Every job runs on a GitHub-hosted
+# runner. There is no `pull_request_target` trigger. Pull requests never log in
+# to the registry or push, and a pull request from a fork always receives a
+# read-only GITHUB_TOKEN, whatever `permissions:` requests below.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Image name (under images/) to build. Leave blank to build all.'
+        required: false
+        default: ''
+
+env:
+  REGISTRY: ghcr.io
+  PLATFORMS: linux/amd64,linux/arm64
+  # Write OCI annotations to both the per-platform manifests and the
+  # multi-arch index, so GHCR links each package to this repository.
+  DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+
+# Every publishing run shares one non-dropping lane, including manual branch
+# runs. Docs-only pushes must not evict pending image changes. Queue arrival
+# order is not commit order, so each image also checks freshness before push.
+# PRs have isolated per-ref lanes and never publish. queue:max requires false.
+concurrency:
+  group: docker-build-${{ github.event_name == 'pull_request' && github.ref || 'publication' }}
+  queue: max
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+      build_required: ${{ steps.select.outputs.build_required }}
+      openchamber_required: ${{ steps.select.outputs.openchamber_required }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26.7.0
+      - name: Select changed image build definitions
+        id: select
+        run: node .github/scripts/select-images.mjs
+
+  build:
+    needs: discover
+    timeout-minutes: 60
+    if: needs.discover.outputs.build_required == 'true'
+    runs-on: ubuntu-latest
+    # packages: write is used only by the login and push steps, which never
+    # run on a pull request.
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26.7.0
+
+      - name: Lowercase image namespace
+        id: ns
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image=${REGISTRY}/${owner}/${{ matrix.name }}" >> "${GITHUB_OUTPUT}"
+
+      - name: Read VERSION file (if present)
+        id: version
+        run: |
+          set -euo pipefail
+          vfile="images/${{ matrix.name }}/VERSION"
+          if [[ -f "${vfile}" ]]; then
+            v="$(tr -d '[:space:]' < "${vfile}")"
+            echo "value=${v}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "value=" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # An image that wraps a non-semver upstream release names that release
+      # in TAG, and it is published as that tag, from main only. The file must
+      # hold one non-empty line. `latest` and `sha-*` are reserved for the
+      # tags metadata-action computes, so TAG cannot shadow them.
+      - name: Read TAG file (if present)
+        id: tag
+        run: |
+          set -euo pipefail
+          tfile="images/${{ matrix.name }}/TAG"
+          if [[ -f "${tfile}" ]]; then
+            t="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' "${tfile}" | grep -v '^$' || true)"
+            if [[ -z "${t}" || "${t}" == *$'\n'* ]]; then
+              echo "::error::${tfile} must hold exactly one non-empty line."
+              exit 1
+            fi
+            if [[ ! "${t}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+              echo "::error::${tfile} must hold exactly one valid container tag."
+              exit 1
+            fi
+            if [[ "${t}" == "latest" || "${t}" == sha-* ]]; then
+              echo "::error::${tfile} must not use the reserved tag '${t}'."
+              exit 1
+            fi
+            echo "value=${t}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "value=" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.ns.outputs.image }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+            type=ref,event=branch,enable=${{ github.event_name != 'pull_request' && github.ref != 'refs/heads/main' }}
+            type=ref,event=pr
+            type=sha,format=short
+            type=raw,value=v${{ steps.version.outputs.value }},enable=${{ steps.version.outputs.value != '' && github.event_name != 'pull_request' }}
+            type=raw,value=${{ steps.tag.outputs.value }},enable=${{ steps.tag.outputs.value != '' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          annotations: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      # A large image can fill the runner's disk when Trivy exports the
+      # loaded image for scanning. Drop preinstalled toolchains no build uses.
+      - name: Free runner disk space
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # The build context is the image's own directory, not the repository
+      # root, so an image is a self-contained folder you can `docker build`
+      # by hand with a single path argument.
+      - name: Build (load locally for scan)
+        uses: docker/build-push-action@v7
+        with:
+          context: images/${{ matrix.name }}
+          platforms: linux/amd64
+          load: true
+          tags: ${{ matrix.name }}:scan
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+
+      # Images authored in this repository get a blocking gate: a CRITICAL or
+      # HIGH finding with a fix available is ours to fix, so it fails here.
+      - name: Trivy (image scan)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ matrix.name }}:scan
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+          # Large images need more than Trivy's 5m default.
+          timeout: 15m
+          trivyignores: ${{ hashFiles(format('images/{0}/.trivyignore', matrix.name)) != '' && format('images/{0}/.trivyignore', matrix.name) || '' }}
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check publication freshness
+        id: publication
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE_NAME: ${{ matrix.name }}
+        run: node .github/scripts/select-images.mjs --publication
+
+      - name: Build and push (multi-arch)
+        id: image_publish
+        if: github.event_name != 'pull_request' && steps.publication.outputs.publish == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: images/${{ matrix.name }}
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,scope=${{ matrix.name }},mode=max
+
+  openchamber:
+    # Upstream openchamber/openchamber ships a Dockerfile but publishes no
+    # image. This job builds it from a ref pinned in images/openchamber/
+    # UPSTREAM_REF. Upstream is vendored by checkout rather than by submodule,
+    # so no gitlink is added to this repository.
+    # Only selected changes under images/openchamber/ run this job.
+    needs: discover
+    if: needs.discover.outputs.openchamber_required == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # packages: write is used only by the login and push steps, which never
+    # run on a pull request.
+    permissions:
+      contents: read
+      packages: write
+    env:
+      UPSTREAM_REPO: openchamber/openchamber
+      UPSTREAM_DIR: .upstream/openchamber
+      # amd64 only, deliberately. The upstream build runs `bun run build:web`,
+      # and cross-building that under QEMU emulation is slow enough to risk the
+      # job timeout for an architecture nothing here deploys to. Add
+      # linux/arm64 when something needs it, and expect a long build.
+      OPENCHAMBER_PLATFORMS: linux/amd64
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26.7.0
+
+      - name: Read pinned upstream ref
+        id: upstream
+        run: |
+          set -euo pipefail
+          reffile="images/openchamber/UPSTREAM_REF"
+          if [[ ! -f "${reffile}" ]]; then
+            echo "::error::${reffile} is missing. It must hold the upstream git ref to build."
+            exit 1
+          fi
+          ref="$(tr -d '[:space:]' < "${reffile}")"
+          if [[ -z "${ref}" ]]; then
+            echo "::error::${reffile} is empty. It must hold an upstream tag, branch, or commit SHA."
+            exit 1
+          fi
+          # A ref may contain '/', which is not legal in a container tag.
+          echo "ref=${ref}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${ref//\//-}" >> "${GITHUB_OUTPUT}"
+          echo "Building ${UPSTREAM_REPO} at ${ref}"
+
+      - name: Check out upstream openchamber
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ steps.upstream.outputs.ref }}
+          path: ${{ env.UPSTREAM_DIR }}
+          persist-credentials: false
+
+      - name: Lowercase image namespace
+        id: ns
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "image=${REGISTRY}/${owner}/openchamber" >> "${GITHUB_OUTPUT}"
+
+      # `source` names this repository so GHCR links the package here. The
+      # upstream project is recorded in `url` and `version`.
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.ns.outputs.image }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ steps.upstream.outputs.tag }},enable=${{ github.event_name != 'pull_request' }}
+            type=ref,event=pr
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.url=https://github.com/${{ env.UPSTREAM_REPO }}
+            org.opencontainers.image.version=${{ steps.upstream.outputs.ref }}
+            org.opencontainers.image.licenses=MIT
+          annotations: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.url=https://github.com/${{ env.UPSTREAM_REPO }}
+            org.opencontainers.image.version=${{ steps.upstream.outputs.ref }}
+            org.opencontainers.image.licenses=MIT
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # The context is the upstream checkout. Every COPY in the upstream
+      # Dockerfile is relative to its own repository root, and Docker reads
+      # the upstream .dockerignore from there too.
+      - name: Build (load locally for scan)
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ env.UPSTREAM_DIR }}
+          platforms: linux/amd64
+          load: true
+          tags: openchamber:scan
+          cache-from: type=gha,scope=openchamber
+          cache-to: type=gha,scope=openchamber,mode=max
+
+      # Report-only. This is upstream code we do not control, so a blocking
+      # CRITICAL/HIGH gate would fail on findings that cannot be fixed from
+      # this repository. Findings land in the job summary instead.
+      - name: Trivy (image scan, report only)
+        id: trivy
+        continue-on-error: true
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: openchamber:scan
+          format: table
+          output: trivy-openchamber.txt
+          exit-code: '0'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      - name: Publish scan findings to the job summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## Trivy — openchamber (report only)"
+            echo
+            echo "Upstream \`${UPSTREAM_REPO}\` at \`${{ steps.upstream.outputs.ref }}\`."
+            echo "CRITICAL and HIGH, fixed findings only. These never fail the build."
+            echo
+            if [[ -s trivy-openchamber.txt ]]; then
+              echo '```'
+              cat trivy-openchamber.txt
+              echo '```'
+            else
+              echo "No report produced. Trivy step outcome: ${{ steps.trivy.outcome }}."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check publication freshness
+        id: publication
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE_NAME: openchamber
+        run: node .github/scripts/select-images.mjs --publication
+
+      - name: Build and push
+        if: github.event_name != 'pull_request' && steps.publication.outputs.publish == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ env.UPSTREAM_DIR }}
+          platforms: ${{ env.OPENCHAMBER_PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+          cache-from: type=gha,scope=openchamber
+          cache-to: type=gha,scope=openchamber,mode=max
+
+  # The `build` job is a matrix, so its check runs are named
+  # `build (image-name)`, which changes with the image set. A ruleset cannot
+  # require those stably, so require this one stable context instead: it
+  # never fails when every needed job succeeded or was skipped legitimately,
+  # and it always reports because of `if: always()`.
+  build-summary:
+    name: build-summary
+    needs: [discover, build, openchamber]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26.7.0
+      - name: Aggregate required job results
+        env:
+          DISCOVER_RESULT: ${{ needs.discover.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          OPENCHAMBER_RESULT: ${{ needs.openchamber.result }}
+          BUILD_REQUIRED: ${{ needs.discover.outputs.build_required }}
+          OPENCHAMBER_REQUIRED: ${{ needs.discover.outputs.openchamber_required }}
+        run: node .github/scripts/select-images.mjs --summary

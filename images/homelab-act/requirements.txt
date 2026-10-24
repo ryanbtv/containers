@@ -1,0 +1,11 @@
+ansible-core
+jmespath
+ansible-pylibssh
+proxmoxer
+requests
+pynetbox
+netaddr
+ansible-dev-tools
+proxmoxer
+kubernetes
+paramiko

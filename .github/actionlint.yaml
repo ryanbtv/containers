@@ -1,0 +1,13 @@
+# actionlint configuration.
+#
+# Every job runs on a GitHub-hosted runner, so no self-hosted runner labels
+# are declared.
+self-hosted-runner:
+  labels: []
+
+paths:
+  .github/workflows/docker-build-pipeline.yml:
+    ignore:
+      # GitHub's non-dropping concurrency queue (`queue: max`) is newer than
+      # actionlint's workflow schema.
+      - 'unexpected key "queue" for "concurrency" section'

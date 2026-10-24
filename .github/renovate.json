@@ -1,0 +1,53 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "schedule:weekly",
+    "group:all"
+  ],
+  "branchPrefix": "renovate/",
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
+  "dependencyDashboard": true,
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 0,
+  "enabledManagers": [
+    "dockerfile",
+    "pip_requirements",
+    "custom.regex"
+  ],
+  "ignorePaths": [
+    "**/node_modules/**"
+  ],
+  "dockerfile": {
+    "managerFilePatterns": [
+      "/^images\\/.+\\/Dockerfile$/"
+    ]
+  },
+  "pip_requirements": {
+    "managerFilePatterns": [
+      "/^images\\/.+\\/requirements\\.txt$/"
+    ]
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^images\\/.+\\/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?(?: extractVersion=(?<extractVersion>\\S+))?\\s+ARG\\s+[A-Z0-9_]+=(?<currentValue>\\S+)"
+      ],
+      "datasourceTemplate": "{{datasource}}",
+      "depNameTemplate": "{{depName}}"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Container/OCI registries (notably ghcr.io) do not expose per-tag release timestamps. With Renovate >=42 defaulting to minimumReleaseAgeBehaviour=timestamp-required, every image tag is treated as pending forever and internalChecksFilter=strict then discards it. Treat missing timestamps as aged so image updates are proposed.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    }
+  ]
+}
