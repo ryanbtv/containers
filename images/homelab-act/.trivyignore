@@ -1,0 +1,40 @@
+# Trivy suppressions for homelab-act. Each entry needs a justification and a
+# reason it cannot be fixed in the image.
+#
+# Every finding below comes from pip's own vendored dependency manifest at
+# venv/lib/python3.*/site-packages/pip/_vendor/bom.cdx.json, a CycloneDX SBOM
+# that Trivy parses as if the packages were installed. setuptools and msgpack
+# are not importable, and no code in this image loads them. urllib3 is pip's
+# private copy, used only when pip itself downloads. The real installed copies
+# are current: setuptools 84.0.0, msgpack 1.2.2, and urllib3 2.8.0, all at or
+# above the fixed versions.
+#
+# Upgrading does not clear these, because the Dockerfile already installs the
+# newest pip and that pip still vendors these versions. The only alternatives
+# are deleting pip from the venv, which would strip a package manager from a CI
+# runner image, or deleting pip's SBOM, which would hide the finding rather
+# than record it. Suppressing with a reason is the honest option.
+#
+# Re-check when pip is upgraded: if its vendor manifest moves past the fixed
+# versions, delete the matching lines.
+
+# setuptools 70.3.0 vendored by pip. Path traversal. Installed copy is 84.0.0.
+CVE-2025-47273
+
+# msgpack 1.1.2 vendored by pip. Out-of-bounds read. Installed copy is 1.2.2.
+GHSA-6v7p-g79w-8964
+
+# urllib3 2.7.0 vendored by pip 26.2.1, the newest release; pip main still pins
+# 2.7.0 in src/pip/_vendor/vendor.txt. Installed copy is 2.8.0, pinned by the
+# Dockerfile's transitive-upgrade step.
+# HTTPS proxy TLS configuration override.
+CVE-2026-97687
+# Unbounded memory allocation in the chunk parser.
+CVE-2026-97689
+
+# certifi 2026.6.17 vendored by pip, listed in pip/_vendor/bom.cdx.json.
+# Bundles emSign root CAs with compromised intermediate keys. pip uses its
+# private copy only when pip itself downloads. Installed copy is >=2026.10.19,
+# pinned by the Dockerfile's transitive-upgrade step.
+# review-by: 2026-12-31
+GHSA-6q48-6c7w-9gw2

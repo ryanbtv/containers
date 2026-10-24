@@ -1,0 +1,29 @@
+---
+roles:
+  - name: geerlingguy.ntp
+#  - name: geerlingguy.helm
+  - name: geerlingguy.node_exporter
+  - name: lae.proxmox
+    src: https://github.com/lae/ansible-role-proxmox
+    version: develop
+#  - name: lablabs.rke2
+  - name: geerlingguy.docker
+  - name: geerlingguy.nfs
+  - name: geerlingguy.samba
+#  - name: PowerDNS.pdns
+  - name: geerlingguy.pip
+  - name: geerlingguy.certbot
+
+collections:
+  - name: vladgh.samba
+  - name: community.zabbix
+  - name: netbox.netbox
+  - name: community.general
+  - name: community.proxmox
+  - name: ansible.utils
+  - name: vyos.vyos
+  - name: effectivelywild.technitium_dns
+  - name: netbox.netbox
+  - name: azure.azcollection
+  - name: cisco.ios
+  - name: kubernetes.core

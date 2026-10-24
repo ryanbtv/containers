@@ -1,0 +1,36 @@
+# Findings left after pruning node20. Each comes from a binary the image
+# inherits or pins at its latest release, with no newer upstream build yet.
+# Remove an entry once a base or Compose bump clears it.
+
+# component: npm bundled in /home/runner/externals/node24 (brace-expansion 5.0.9)
+# upstream: ghcr.io/actions/actions-runner:2.338.1 (actions/runner node24 external)
+# reason: npm is not used by the runner or by actions; fixed by a future runner release
+# review-by: 2026-12-31
+CVE-2026-102276
+CVE-2026-102278
+
+# component: npm bundled in /home/runner/externals/node24 (undici 6.28.0)
+# upstream: ghcr.io/actions/actions-runner:2.338.1 (actions/runner node24 external)
+# reason: npm is not used by the runner or by actions; fixed by a future runner release
+# review-by: 2026-12-31
+CVE-2026-109869
+CVE-2026-19534
+
+# component: golang.org/x/net in containerd, containerd-shim-runc-v2, ctr, runc,
+#   docker-buildx (base image) and docker-compose v5.6.1 (latest release)
+# upstream: ghcr.io/actions/actions-runner:2.338.1 Docker packages; docker/compose v5.6.1
+# reason: compiled into upstream binaries; no rebuilt release yet
+# review-by: 2026-12-31
+CVE-2026-78669
+
+# component: golang.org/x/net v0.55.0 in /usr/bin/runc
+# upstream: ghcr.io/actions/actions-runner:2.338.1 Docker packages
+# reason: compiled into the upstream binary; no rebuilt release yet
+# review-by: 2026-12-31
+CVE-2026-46600
+
+# component: github.com/moby/go-archive v0.2.0 in docker-buildx
+# upstream: ghcr.io/actions/actions-runner:2.338.1 Docker packages
+# reason: compiled into the upstream binary; no rebuilt release yet
+# review-by: 2026-12-31
+CVE-2026-17106
