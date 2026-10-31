@@ -652,7 +652,19 @@ func checkCSR(der []byte, identifiers []string) (*x509.CertificateRequest, *Prob
 		return nil, newProblem(problemBadCSR,
 			"CSR SANs do not exactly match the order identifiers", http.StatusBadRequest)
 	}
+	// The upstream lego client builds its own order from CN + SANs, so a
+	// common name outside the SAN set would ask the upstream CA to order
+	// over identifiers this front never validated. Require CN ⊆ SANs.
+	if cn := strings.ToLower(strings.TrimSpace(csr.Subject.CommonName)); cn != "" && !containsName(sans, cn) {
+		return nil, newProblem(problemBadCSR,
+			"CSR common name must also appear in the SANs", http.StatusBadRequest)
+	}
 	return csr, nil
+}
+
+func containsName(sortedLower []string, want string) bool {
+	i := sort.SearchStrings(sortedLower, want)
+	return i < len(sortedLower) && sortedLower[i] == want
 }
 
 func leafFromChain(chainPEM []byte) (*x509.Certificate, error) {

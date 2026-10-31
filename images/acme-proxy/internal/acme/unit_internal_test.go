@@ -5,6 +5,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"reflect"
 	"testing"
@@ -61,6 +62,35 @@ func TestCheckCSR(t *testing.T) {
 	}
 	if _, prob := checkCSR([]byte("garbage"), []string{"a.ryanb.tv"}); prob == nil {
 		t.Error("unparsable CSR accepted")
+	}
+}
+
+func TestCheckCSRCommonNameRule(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := func(cn string, names []string) []byte {
+		tmpl := &x509.CertificateRequest{
+			Subject:  pkix.Name{CommonName: cn},
+			DNSNames: names,
+		}
+		der, err := x509.CreateCertificateRequest(rand.Reader, tmpl, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return der
+	}
+	ids := []string{"a.ryanb.tv"}
+
+	if _, prob := checkCSR(build("", ids), ids); prob != nil {
+		t.Errorf("empty CN rejected: %v", prob)
+	}
+	if _, prob := checkCSR(build("A.Ryanb.TV", ids), ids); prob != nil {
+		t.Errorf("CN equal to a SAN (different case) rejected: %v", prob)
+	}
+	if _, prob := checkCSR(build("other.ryanb.tv", ids), ids); prob == nil {
+		t.Error("CN outside the SAN set accepted")
 	}
 }
 

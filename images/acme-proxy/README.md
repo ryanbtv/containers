@@ -17,8 +17,11 @@ key never leaves the client.
 1. Client talks normal ACME here: account, order, http-01 challenge.
 2. This server fetches `http://<identifier>/.well-known/acme-challenge/<token>`
    on port 80 from inside the network and checks the key authorization.
+   Same-host redirects to port 80 (or https on 443) are followed, up to
+   10 hops; redirects to any other host or port are refused.
 3. On `finalize` the client's CSR is checked (SANs must equal the order
-   identifiers) and issued upstream synchronously (up to 120 s, Cloudflare
+   identifiers; a common name, if present, must be one of the SANs) and
+   issued upstream synchronously (up to 120 s, Cloudflare
    TXT propagation included); the response already carries `valid` + the
    certificate URL. A client that polls just sees one extra `processing`
    state transition.
