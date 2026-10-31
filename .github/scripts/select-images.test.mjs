@@ -41,9 +41,9 @@ function fixture(t) {
   return { root, write, git, commit, before, select, push };
 }
 
-test("current repository inventory is the three local builds plus upstream OpenChamber", () => {
+test("current repository inventory is the four local builds plus upstream OpenChamber", () => {
   assert.deepEqual(inventory(fileURLToPath(new URL("../../", import.meta.url))).map(({ name }) => name),
-    ["arc-runner", "homelab-act", "netbox-mcp", "openchamber"]);
+    ["acme-proxy", "arc-runner", "homelab-act", "netbox-mcp", "openchamber"]);
 });
 
 test("each image directory selects only itself, including hidden and metadata inputs", (t) => {
