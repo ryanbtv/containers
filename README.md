@@ -7,6 +7,7 @@ Source for container images published to `ghcr.io/ryanbtv/<image-name>`. Each im
 | Directory | Published as | What it is |
 | --- | --- | --- |
 | [`images/arc-runner/`](images/arc-runner/README.md) | `ghcr.io/ryanbtv/arc-runner` | Runner image for a self-hosted ARC (Actions Runner Controller) scale set. Official actions-runner plus `gh`, `python3`, and the Docker Compose plugin. `linux/amd64` and `linux/arm64`. |
+| `images/acme-proxy/` | `ghcr.io/ryanbtv/acme-proxy` | ACME server for internal machines: validates clients' http-01 challenges on the internal network and issues real Let's Encrypt certificates upstream via DNS-01 (Cloudflare), relaying client CSRs. Postgres-backed, horizontally scalable. |
 | `images/homelab-act/` | `ghcr.io/ryanbtv/homelab-act` | Pre-baked [`act`](https://github.com/nektos/act) runner image for Ansible playbook workflows. Ubuntu, Python, Ansible and collections, Azure CLI, Node. |
 | [`images/netbox-mcp/`](images/netbox-mcp/README.md) | `ghcr.io/ryanbtv/netbox-mcp` | Zero-dependency NetBox MCP server (REST and read-only GraphQL) with a committed schema catalog. stdio by default, optional authenticated HTTP. |
 | [`images/openchamber/`](images/openchamber/README.md) | `ghcr.io/ryanbtv/openchamber` | Upstream [OpenChamber](https://github.com/openchamber/openchamber), built from a pinned ref. Upstream publishes no image of its own. `linux/amd64` only. |
@@ -90,7 +91,7 @@ node scripts/test.mjs --coverage # native coverage, awareness only
 
 ## Package settings
 
-GHCR packages are configured on github.com, not in this repository. For each package (`arc-runner`, `homelab-act`, `netbox-mcp`, `openchamber`), under **Package settings**:
+GHCR packages are configured on github.com, not in this repository. For each package (`arc-runner`, `homelab-act`, `netbox-mcp`, `openchamber`, `acme-proxy`), under **Package settings**:
 
 - **Manage Actions access:** add `ryanbtv/containers` with the **Write** role.
 - **Danger Zone → Change visibility:** set **Public**.
