@@ -183,6 +183,106 @@ func TestManualAcmeFlowAndRevoke(t *testing.T) {
 	}
 }
 
+// issueWithAccount drives order → validation → finalize → download for a
+// hand-rolled client key and returns the leaf certificate DER.
+func issueWithAccount(t *testing.T, env *testEnv, acctKey jose.JSONWebKey, domain string) []byte {
+	t.Helper()
+	kid := accountURL(t, env, acctKey)
+	thumb, err := acme.Thumbprint(&acctKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := newOrder(t, env, acctKey, fmt.Sprintf(`{"identifiers":[{"type":"dns","value":"%s"}]}`, domain))
+	if res.Status != 201 {
+		t.Fatalf("newOrder = %d %s", res.Status, res.Body)
+	}
+	orderURL := res.Header.Get("Location")
+	var order map[string]any
+	if err := json.Unmarshal(res.Body, &order); err != nil {
+		t.Fatal(err)
+	}
+	authzURL := order["authorizations"].([]any)[0].(string)
+
+	nonce := env.getNonce(t)
+	r := env.post(t, authzURL, acctKey, kid, nonce, "")
+	var authz struct {
+		Challenges []struct {
+			URL   string `json:"url"`
+			Token string `json:"token"`
+		} `json:"challenges"`
+	}
+	if err := json.Unmarshal(r.Body, &authz); err != nil {
+		t.Fatal(err)
+	}
+	chal := authz.Challenges[0]
+	if err := env.solver.Present(context.Background(), domain, chal.Token,
+		acme.KeyAuthorization(chal.Token, thumb)); err != nil {
+		t.Fatal(err)
+	}
+
+	nonce = env.getNonce(t)
+	if r = env.post(t, chal.URL, acctKey, kid, nonce, "{}"); r.Status != 200 {
+		t.Fatalf("challenge POST = %d %s", r.Status, r.Body)
+	}
+
+	csrDER, _, _ := makeCSR(t, domain)
+	payload := fmt.Sprintf(`{"csr":"%s"}`, base64.RawURLEncoding.EncodeToString(csrDER))
+	nonce = env.getNonce(t)
+	if r = env.post(t, orderURL+"/finalize", acctKey, kid, nonce, payload); r.Status != 200 {
+		t.Fatalf("finalize = %d %s", r.Status, r.Body)
+	}
+	var done struct {
+		Certificate string `json:"certificate"`
+	}
+	if err := json.Unmarshal(r.Body, &done); err != nil || done.Certificate == "" {
+		t.Fatalf("finalize body = %s", r.Body)
+	}
+
+	nonce = env.getNonce(t)
+	certResp := env.post(t, done.Certificate, acctKey, kid, nonce, "")
+	if certResp.Status != 200 {
+		t.Fatalf("certificate download = %d", certResp.Status)
+	}
+	return parseChain(t, certResp.Body)[0].Raw
+}
+
+// TestRevocationAuthorizationPrecedesMutation guards RFC 8555 §7.6: the
+// signing key must be verified as authorized BEFORE the certificate is
+// revoked. A foreign key revoking a LIVE certificate must get 403
+// unauthorized and must leave the certificate unrevoked.
+func TestRevocationAuthorizationPrecedesMutation(t *testing.T) {
+	env := newEnv(t, newMemStore(), nil)
+	acctKey := createAccount(t, env)
+	kid := accountURL(t, env, acctKey)
+	leafDER := issueWithAccount(t, env, acctKey, "live-revoke.ryanb.tv")
+
+	foreign := newAccountKey(t)
+	certB64 := base64.RawURLEncoding.EncodeToString(leafDER)
+	nonce := env.getNonce(t)
+	res := env.post(t, env.Server.URL+"/acme/revoke-cert", foreign, "", nonce,
+		fmt.Sprintf(`{"certificate":"%s"}`, certB64))
+	if res.Status != 403 || problemType(t, res.Body) != "urn:ietf:params:acme:error:unauthorized" {
+		t.Fatalf("foreign revoke of live cert = %d %s, want 403 unauthorized", res.Status, res.Body)
+	}
+
+	certs, err := env.store.ListCertificates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(certs) != 1 || certs[0].Revoked {
+		t.Fatalf("certificate revoked despite failed authorization: %+v", certs)
+	}
+
+	// Positive control: the owning account can still revoke it.
+	nonce = env.getNonce(t)
+	res = env.post(t, env.Server.URL+"/acme/revoke-cert", acctKey, kid, nonce,
+		fmt.Sprintf(`{"certificate":"%s"}`, certB64))
+	if res.Status != 200 {
+		t.Fatalf("owner revoke = %d %s, want 200", res.Status, res.Body)
+	}
+}
+
 // TestChallengeValidationFailureMarksOrderInvalid removes the answer before
 // validation so the fetch 404s: authz must end invalid with an ACME error
 // object and the order must become invalid.

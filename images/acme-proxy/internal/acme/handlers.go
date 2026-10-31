@@ -707,7 +707,10 @@ func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 	serial := strings.ToUpper(cert.SerialNumber.Text(16))
 	aki := hex.EncodeToString(cert.AuthorityKeyId)
 
-	rec, certAccountID, found, already, err := s.store.RevokeCertificate(ctx, serial, aki, derefInt(payload.Reason))
+	// RFC 8555 §7.6: the signing key MUST be verified as authorized BEFORE
+	// the certificate is revoked. Look the certificate up read-only,
+	// authorize, and only then mutate state.
+	rec, certAccountID, found, err := s.store.CertificateBySerial(ctx, serial, aki)
 	if err != nil {
 		s.writeProblem(w, r, AsProblem(err))
 		return
@@ -716,9 +719,14 @@ func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 		s.writeProblem(w, r, newProblem(problemMalformed, "no certificate managed by this server has that serial", http.StatusNotFound))
 		return
 	}
-
 	if prob := s.authorizeRevocation(ctx, sreq, cert, certAccountID); prob != nil {
 		s.writeProblem(w, r, prob)
+		return
+	}
+
+	_, _, _, already, err := s.store.RevokeCertificate(ctx, serial, aki, derefInt(payload.Reason))
+	if err != nil {
+		s.writeProblem(w, r, AsProblem(err))
 		return
 	}
 	if already {
