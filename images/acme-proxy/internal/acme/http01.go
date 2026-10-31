@@ -2,7 +2,9 @@ package acme
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -31,9 +33,20 @@ type HTTP01Validator struct {
 	Timeout     time.Duration // per-validation deadline, default 30s
 }
 
+// maxRedirects bounds http-01 redirect following (RFC 8555 §8.3).
+const maxRedirects = 10
+
+// errRedirectRefused marks a redirect rejected by the CheckRedirect policy
+// below, so Validate can classify it separately from transport failures.
+var errRedirectRefused = errors.New("redirect refused")
+
 // Validate fetches the token URL and compares the body with keyAuth.
-// Redirects are followed per RFC 8555 §8.3. It returns nil on success or an
-// ACME problem suitable for the authorization error object.
+// Redirects are followed per RFC 8555 §8.3, bounded like Boulder: the
+// target must stay on the identifier's own hostname and on port 80 (http)
+// or 443 (https). Without that check a compromised host answering for an
+// allowlisted name could redirect the validator at arbitrary internal
+// addresses (SSRF). It returns nil on success or an ACME problem suitable
+// for the authorization error object.
 func (v *HTTP01Validator) Validate(ctx context.Context, domain, token, keyAuth string) *Problem {
 	timeout := v.Timeout
 	if timeout == 0 {
@@ -49,10 +62,35 @@ func (v *HTTP01Validator) Validate(ctx context.Context, domain, token, keyAuth s
 	}
 	client := &http.Client{
 		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= maxRedirects {
+				return fmt.Errorf("too many redirects (%d): %w", maxRedirects, errRedirectRefused)
+			}
+			u := req.URL
+			host := strings.ToLower(u.Hostname())
+			if host != strings.ToLower(domain) {
+				return fmt.Errorf("redirect to %q refused: target host must equal the identifier host %q: %w",
+					u.Host, domain, errRedirectRefused)
+			}
+			switch {
+			case strings.EqualFold(u.Scheme, "http") && (u.Port() == "" || u.Port() == "80"):
+			case strings.EqualFold(u.Scheme, "https") && (u.Port() == "" || u.Port() == "443"):
+			default:
+				return fmt.Errorf("redirect to %s://%s refused: only ports 80 and 443 are allowed: %w",
+					u.Scheme, u.Host, errRedirectRefused)
+			}
+			return nil
+		},
 		Transport: &http.Transport{
 			DialContext: dial,
 			// Port 80 only, per spec. No TLS: the URL scheme is http.
 			DisableKeepAlives: true,
+			// A same-host https: redirect cannot present a trusted chain:
+			// the host is proving it controls the name precisely because
+			// it has no valid certificate yet (Boulder skips verification
+			// for validation fetches too). Authenticity comes from the
+			// key authorization body, not from TLS.
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // validation traffic; content authenticated by key authorization
 		},
 	}
 
@@ -65,6 +103,11 @@ func (v *HTTP01Validator) Validate(ctx context.Context, domain, token, keyAuth s
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if errors.Is(err, errRedirectRefused) {
+			// The refusal text describes the rejected target, never the
+			// token or key authorization.
+			return newProblem(problemConnection, "http-01 redirect refused: "+err.Error(), http.StatusForbidden)
+		}
 		return classifyFetchError(err, domain)
 	}
 	defer resp.Body.Close()

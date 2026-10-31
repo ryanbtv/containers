@@ -477,6 +477,12 @@ func newEnv(t *testing.T, store acme.Store, issuer acme.Issuer) *testEnv {
 			http.NotFound(w, r)
 			return
 		}
+		// Values prefixed REDIRECT: answer with a 302 to the remainder,
+		// exercising the validator's redirect policy.
+		if target, isRedir := strings.CutPrefix(v, "REDIRECT:"); isRedir {
+			http.Redirect(w, r, target, http.StatusFound)
+			return
+		}
 		_, _ = w.Write([]byte(v))
 	}))
 	t.Cleanup(solve.Close)
