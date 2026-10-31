@@ -6,9 +6,11 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"time"
 
 	legoacme "github.com/go-acme/lego/v5/acme"
 	"github.com/go-acme/lego/v5/certificate"
+	"github.com/go-acme/lego/v5/challenge"
 	"github.com/go-acme/lego/v5/lego"
 	"github.com/go-acme/lego/v5/providers/dns/cloudflare"
 	"github.com/go-acme/lego/v5/registration"
@@ -54,10 +56,33 @@ func (a *leAccount) GetEmail() string                           { return "" }
 func (a *leAccount) GetRegistration() *legoacme.ExtendedAccount { return nil }
 func (a *leAccount) GetPrivateKey() crypto.Signer               { return a.key }
 
+// cleanupGrace bounds the detached TXT-record cleanup.
+const cleanupGrace = 30 * time.Second
+
+// dnsCleanupProvider wraps a DNS provider so TXT-record cleanup survives
+// cancellation of the issuance context (deadline exceeded or client
+// disconnect mid-finalize). lego hands the caller's ctx verbatim to
+// CleanUp (challenge/resolver/prober.go cleanUp), so with a canceled
+// context the Cloudflare DELETE would fail and leave stale
+// _acme-challenge TXT records behind. Cleanup instead gets a fresh,
+// bounded context detached from the caller's.
+type dnsCleanupProvider struct {
+	challenge.ProviderTimeout
+}
+
+func (p dnsCleanupProvider) CleanUp(ctx context.Context, domain, token, keyAuth string) error {
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupGrace)
+	defer cancel()
+	return p.ProviderTimeout.CleanUp(cleanupCtx, domain, token, keyAuth)
+}
+
 // Issue runs one upstream issuance. The caller bounds ctx (~120s), which
-// caps lego's DNS-01 propagation wait too. lego cleans up the TXT record on
-// both success and failure paths (its solver defers CleanUp); no token or
-// key material appears in returned error strings.
+// caps lego's DNS-01 propagation wait too: Cloudflare's propagation wait is
+// configured below to fit inside that budget. TXT cleanup runs on success
+// AND every failure path, including ctx cancellation, via
+// dnsCleanupProvider. Error strings may embed Let's Encrypt account or
+// order URLs (harmless account metadata); no token or key material is
+// included.
 func (l *LegoIssuer) Issue(ctx context.Context, csrDER []byte, identifiers []string) ([]byte, error) {
 	if l.cfToken == "" {
 		return nil, errors.New("upstream issuance unavailable: CLOUDFLARE_DNS_API_TOKEN is not configured")
@@ -78,11 +103,16 @@ func (l *LegoIssuer) Issue(ctx context.Context, csrDER []byte, identifiers []str
 
 	cfCfg := cloudflare.NewDefaultConfig()
 	cfCfg.AuthToken = l.cfToken
+	// Cloudflare's default propagation wait (120 s) equals the whole
+	// issuance budget; cap it so upstream validation, finalize, and chain
+	// download still fit inside the caller's ~120 s deadline instead of
+	// being cut off mid-flight with a stale TXT record pending.
+	cfCfg.PropagationTimeout = 90 * time.Second
 	provider, err := cloudflare.NewDNSProviderConfig(cfCfg)
 	if err != nil {
 		return nil, fmt.Errorf("cloudflare dns provider: %w", err)
 	}
-	if err := client.Challenge.SetDNS01Provider(provider); err != nil {
+	if err := client.Challenge.SetDNS01Provider(dnsCleanupProvider{provider}); err != nil {
 		return nil, fmt.Errorf("dns01 solver: %w", err)
 	}
 
