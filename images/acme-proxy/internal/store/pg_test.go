@@ -168,6 +168,84 @@ func TestNoncesAcrossPools(t *testing.T) {
 	}
 }
 
+// TestSetOrderProcessingExclusive proves the ready → processing transition
+// admits exactly one winner across pools, which is what keeps concurrent
+// finalize POSTs on separate replicas from double-issuing upstream.
+func TestSetOrderProcessingExclusive(t *testing.T) {
+	ctx := context.Background()
+	dsn := freshDB(t, pgDSN(t))
+	dbA, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbA.Close()
+	dbB, err := New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dbB.Close()
+
+	if err := Migrate(ctx, mustPool(t, dsn)); err != nil {
+		t.Fatal(err)
+	}
+	// Seed a valid account row for the order's foreign key.
+	var accID int64
+	if err := dbA.pool.QueryRow(ctx, `
+		INSERT INTO acme_accounts(jwk, thumbprint) VALUES ('{}'::jsonb, 'tp-race')
+		RETURNING id`).Scan(&accID); err != nil {
+		t.Fatal(err)
+	}
+	order, _, err := dbA.CreateOrder(ctx, accID, []string{"x.ryanb.tv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dbA.CompleteValidation(ctx, mustAuthzID(t, dbA, order.ID), true, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	const racers = 8
+	results := make([]bool, racers)
+	errs := make([]error, racers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range racers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			pool := dbA
+			if i%2 == 1 {
+				pool = dbB
+			}
+			results[i], errs[i] = pool.SetOrderProcessing(ctx, order.ID)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	winners := 0
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("racer %d: %v", i, err)
+		}
+		if results[i] {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("SetOrderProcessing winners = %d, want exactly 1", winners)
+	}
+}
+
+func mustAuthzID(t *testing.T, db *DB, orderID int64) int64 {
+	t.Helper()
+	authzs, err := db.AuthzByOrder(context.Background(), orderID)
+	if err != nil || len(authzs) != 1 {
+		t.Fatalf("authzs = %v, %v", authzs, err)
+	}
+	return authzs[0].ID
+}
+
 // TestKVSetIfAbsentRace is the upstream account key boot race.
 func TestKVSetIfAbsentRace(t *testing.T) {
 	ctx := context.Background()

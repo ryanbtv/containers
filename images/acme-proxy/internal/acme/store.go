@@ -100,7 +100,10 @@ type Store interface {
 	// invalidates the order; all-valid advances pending to ready. Orders
 	// already past pending (processing, valid) keep their status.
 	CompleteValidation(ctx context.Context, authzID int64, valid bool, problem *Problem) (Authz, error)
-	SetOrderProcessing(ctx context.Context, orderID int64) error
+	// SetOrderProcessing atomically transitions ready → processing, so
+	// racing finalize requests cannot both reach the upstream issuer. It
+	// reports whether this caller made the transition.
+	SetOrderProcessing(ctx context.Context, orderID int64) (bool, error)
 	CompleteOrder(ctx context.Context, orderID, certificateID int64) (Order, error)
 	FailOrder(ctx context.Context, orderID int64, problem *Problem) (Order, error)
 

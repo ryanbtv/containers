@@ -210,13 +210,16 @@ func (m *memStore) CompleteValidation(_ context.Context, authzID int64, valid bo
 	return a, nil
 }
 
-func (m *memStore) SetOrderProcessing(_ context.Context, orderID int64) error {
+func (m *memStore) SetOrderProcessing(_ context.Context, orderID int64) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o := m.orders[orderID]
+	if o.Status != "ready" {
+		return false, nil
+	}
 	o.Status = "processing"
 	m.orders[orderID] = o
-	return nil
+	return true, nil
 }
 
 func (m *memStore) CompleteOrder(_ context.Context, orderID, certificateID int64) (acme.Order, error) {
@@ -380,6 +383,36 @@ type failingIssuer struct{ err error }
 
 func (f failingIssuer) Issue(ctx context.Context, _ []byte, _ []string) ([]byte, error) {
 	return nil, f.err
+}
+
+// countingIssuer delegates to a real test CA and counts upstream issuance
+// attempts. hold keeps each call inside Issue for a while to widen the race
+// window for concurrency tests.
+type countingIssuer struct {
+	ca    *testCA
+	hold  time.Duration
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *countingIssuer) Issue(ctx context.Context, csrDER []byte, ids []string) ([]byte, error) {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	if c.hold > 0 {
+		select {
+		case <-time.After(c.hold):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return c.ca.Issue(ctx, csrDER, ids)
+}
+
+func (c *countingIssuer) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
 }
 
 // ---- challenge solver + dialer plumbing ----

@@ -1,12 +1,19 @@
 package acme_test
 
 import (
+	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-jose/go-jose/v4"
 
@@ -430,6 +437,94 @@ func TestFinalizeRejectsOrderNotReady(t *testing.T) {
 	r := env.post(t, res.Header.Get("Location")+"/finalize", key, kid, nonce, `{"csr":"AAAA"}`)
 	if r.Status != 403 || problemType(t, r.Body) != "urn:ietf:params:acme:error:orderNotReady" {
 		t.Fatalf("finalize pending order = %d %s, want 403 orderNotReady", r.Status, r.Body)
+	}
+}
+
+// TestConcurrentFinalizeIssuesOnce asserts the ready → processing transition
+// is exclusive: two simultaneous finalize POSTs must produce exactly ONE
+// upstream issuance, and neither may 500.
+func TestConcurrentFinalizeIssuesOnce(t *testing.T) {
+	ci := &countingIssuer{ca: newTestCA(t), hold: 150 * time.Millisecond}
+	env := newEnv(t, newMemStore(), ci)
+	key := createAccount(t, env)
+	kid := accountURL(t, env, key)
+
+	res := newOrder(t, env, key, `{"identifiers":[{"type":"dns","value":"race.ryanb.tv"}]}`)
+	orderURL := res.Header.Get("Location")
+	var order map[string]any
+	if err := json.Unmarshal(res.Body, &order); err != nil {
+		t.Fatal(err)
+	}
+	authzURL := order["authorizations"].([]any)[0].(string)
+	thumb, err := acme.Thumbprint(&key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := env.getNonce(t)
+	r := env.post(t, authzURL, key, kid, nonce, "")
+	var authz struct {
+		Challenges []struct {
+			URL   string `json:"url"`
+			Token string `json:"token"`
+		} `json:"challenges"`
+	}
+	if err := json.Unmarshal(r.Body, &authz); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.solver.Present(context.Background(), "race.ryanb.tv",
+		authz.Challenges[0].Token, acme.KeyAuthorization(authz.Challenges[0].Token, thumb)); err != nil {
+		t.Fatal(err)
+	}
+	nonce = env.getNonce(t)
+	if r = env.post(t, authz.Challenges[0].URL, key, kid, nonce, "{}"); r.Status != 200 {
+		t.Fatalf("challenge = %d %s", r.Status, r.Body)
+	}
+
+	csrDER, _, _ := makeCSR(t, "race.ryanb.tv")
+	payload := fmt.Sprintf(`{"csr":"%s"}`, base64.RawURLEncoding.EncodeToString(csrDER))
+
+	// Sign both finalize requests up front with fresh nonces, then release
+	// them simultaneously.
+	bodies := make([][]byte, 2)
+	for i := range bodies {
+		bodies[i] = sign(t, key, payload, orderURL+"/finalize", env.getNonce(t), kid)
+	}
+	statuses := make([]int, 2)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range bodies {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			resp, err := env.Server.Client().Post(orderURL+"/finalize",
+				"application/jose+json", bytes.NewReader(bodies[i]))
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+			_, _ = io.Copy(io.Discard, resp.Body)
+			statuses[i] = resp.StatusCode
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if n := ci.count(); n != 1 {
+		t.Fatalf("upstream issued %d times, want exactly 1 (statuses %v)", n, statuses)
+	}
+	any200 := false
+	for _, s := range statuses {
+		switch s {
+		case 200: // winner; a loser that re-reads after completion may also replay 200
+			any200 = true
+		case 403: // loser polling an in-flight order (orderNotReady)
+		default:
+			t.Fatalf("unexpected finalize status %d, want 200 or 403", s)
+		}
+	}
+	if !any200 {
+		t.Fatalf("no finalize returned 200: %v", statuses)
 	}
 }
 

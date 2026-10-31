@@ -357,10 +357,17 @@ func (db *DB) CompleteValidation(ctx context.Context, authzID int64, valid bool,
 	return result, nil
 }
 
-func (db *DB) SetOrderProcessing(ctx context.Context, orderID int64) error {
-	_, err := db.pool.Exec(ctx,
-		"UPDATE acme_orders SET status='processing', updated_at=now() WHERE id=$1", orderID)
-	return err
+// SetOrderProcessing transitions ready → processing atomically. The status
+// predicate in the WHERE clause is the mutual exclusion that stops two
+// concurrent finalize POSTs (same replica or different ones) from both
+// calling the upstream issuer: exactly one UPDATE matches a 'ready' row.
+func (db *DB) SetOrderProcessing(ctx context.Context, orderID int64) (bool, error) {
+	tag, err := db.pool.Exec(ctx,
+		"UPDATE acme_orders SET status='processing', updated_at=now() WHERE id=$1 AND status='ready'", orderID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (db *DB) CompleteOrder(ctx context.Context, orderID, certificateID int64) (acme.Order, error) {

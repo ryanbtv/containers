@@ -549,8 +549,29 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	// finalize answers 200, so we return 200 rather than 201 even though the
 	// order is complete: strict clients (x/crypto-derived ACME clients such
 	// as cert-manager) assert exactly 200 here.
-	if err := s.store.SetOrderProcessing(ctx, order.ID); err != nil {
+	// Atomically claim the order: the ready → processing transition happens
+	// in one conditional UPDATE, so concurrent finalize POSTs cannot both
+	// reach the upstream issuer.
+	transitioned, err := s.store.SetOrderProcessing(ctx, order.ID)
+	if err != nil {
 		s.writeProblem(w, r, AsProblem(err))
+		return
+	}
+	if !transitioned {
+		// Another finalize claimed it first (or it moved on since the read
+		// above). If that one completed, replay the finished order;
+		// otherwise tell this client to poll.
+		cur, found, err := s.store.OrderByID(ctx, order.ID)
+		if err != nil {
+			s.writeProblem(w, r, AsProblem(err))
+			return
+		}
+		if found && cur.Status == "valid" {
+			s.writeOrder(w, r, cur)
+			return
+		}
+		s.writeProblem(w, r, newProblem(problemOrderNotReady,
+			"order is already being finalized", http.StatusForbidden))
 		return
 	}
 
