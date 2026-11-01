@@ -6,6 +6,7 @@ require (
 	github.com/go-acme/lego/v5 v5.6.0
 	github.com/go-jose/go-jose/v4 v4.1.7
 	github.com/jackc/pgx/v5 v5.12.0
+	github.com/miekg/dns v1.1.73
 	github.com/prometheus/client_golang v1.25.0
 )
 
@@ -16,7 +17,6 @@ require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.3 // indirect
-	github.com/miekg/dns v1.1.73 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.72.0 // indirect

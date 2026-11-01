@@ -587,6 +587,14 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 			kind = "timeout"
 		}
 		s.metrics.upstreamErr.WithLabelValues(kind).Inc()
+		// Operators must see this: the problem-doc below only reaches the
+		// ACME client. issueErr is sanitized by construction (see
+		// LegoIssuer.Issue) — no token or key material.
+		s.logger.Error("upstream issuance failed",
+			"order", order.ID,
+			"identifiers", order.Identifiers,
+			"kind", kind,
+			"err", issueErr)
 		prob := newProblem(problemServerInternal,
 			"upstream issuance failed: "+issueErr.Error(), http.StatusInternalServerError)
 		if _, ferr := s.store.FailOrder(ctx, order.ID, prob); ferr != nil {
