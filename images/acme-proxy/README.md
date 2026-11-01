@@ -45,6 +45,18 @@ Single-user homelab; things are deliberately hardcoded:
 - Revocation is accepted (account-key `kid` or certificate-key `jwk`
   auth, reason codes honored) and recorded locally. It does **not**
   propagate to Let's Encrypt; revoke at LE directly if that ever matters.
+- **Upstream DNS-01 ignores the cluster's DNS.** lego finds the zone for
+  `_acme-challenge.<host>` by walking SOA answers, and by default it asks
+  `/etc/resolv.conf` — here that is the homelab's internal BIND, which
+  answers SOA for `sff.k8s.ryanb.tv` as its own RFC2136 zone. lego would
+  then hand that private zone name to the Cloudflare API and every
+  issuance fails with "zone could not be found". The DNS-01 resolver is
+  therefore pinned to Cloudflare's authoritative nameservers for the
+  public zone (`adam`/`betty.ns.cloudflare.com`), with the list set and
+  nothing from the system resolver mixed in — the same trick
+  cert-manager uses with `--dns01-recursive-nameservers-only`. The
+  internal http-01 front still resolves identifiers with the system
+  resolver on purpose.
 
 ## Configuration
 
@@ -55,6 +67,7 @@ Exactly these environment variables; everything else is compiled in:
 | `DATABASE_URL` | Postgres DSN. Required. The sole state store. |
 | `CLOUDFLARE_DNS_API_TOKEN` | Cloudflare API token. Required to issue. |
 | `ACME_UPSTREAM_DIRECTORY_URL` | Upstream ACME directory. Optional; default is Let's Encrypt production. Use `https://acme-staging-v02.api.letsencrypt.org/directory` to test without rate limits. |
+| `ACME_DNS01_NAMESERVERS` | Optional. Comma-separated `host[:port]` overriding the pinned DNS-01 resolver below. Emergency escape hatch; the default needs no configuration. |
 | `LISTEN_ADDR` | Listen address, default `:8080`. |
 
 Plain HTTP only — TLS terminates upstream (Traefik). Absolute URLs in
