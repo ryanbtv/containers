@@ -11,6 +11,7 @@ Source for container images published to `ghcr.io/ryanbtv/<image-name>`. Each im
 | `images/homelab-act/` | `ghcr.io/ryanbtv/homelab-act` | Pre-baked [`act`](https://github.com/nektos/act) runner image for Ansible playbook workflows. Ubuntu, Python, Ansible and collections, Azure CLI, Node. |
 | [`images/netbox-mcp/`](images/netbox-mcp/README.md) | `ghcr.io/ryanbtv/netbox-mcp` | Zero-dependency NetBox MCP server (REST and read-only GraphQL) with a committed schema catalog. stdio by default, optional authenticated HTTP. |
 | [`images/openchamber/`](images/openchamber/README.md) | `ghcr.io/ryanbtv/openchamber` | Upstream [OpenChamber](https://github.com/openchamber/openchamber), built from a pinned ref. Upstream publishes no image of its own. `linux/amd64` only. |
+| [`images/prusa-connect/`](images/prusa-connect/README.md) | `ghcr.io/ryanbtv/prusa-connect` | Upstream [Prusa Connect](https://github.com/prusa3d/prusa-connect) image with the release binary, which links the PostgreSQL driver and `/metrics`. `linux/amd64` and `linux/arm64`. |
 
 ## Layout
 
