@@ -26,6 +26,11 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runner = resolve(repoRoot, "scripts", "test.mjs");
 const reporter = resolve(repoRoot, "scripts", "test-coverage-reporter.mjs");
 const expectedTests = [
+  "images/kusto-mcp/test/compat.test.mjs",
+  "images/kusto-mcp/test/kql.test.mjs",
+  "images/kusto-mcp/test/server.test.mjs",
+  "images/kusto-mcp/test/tools.test.mjs",
+  "images/kusto-mcp/test/unit.test.mjs",
   "images/netbox-mcp/test/catalog.test.mjs",
   "images/netbox-mcp/test/client.test.mjs",
   "images/netbox-mcp/test/server.test.mjs",
@@ -48,6 +53,7 @@ describe("repository test runner", () => {
   it("discovers the exact direct-test inventory", () => {
     const inventory = discoverComponents(repoRoot);
     assert.deepEqual(inventory.map(({ name }) => name), [
+      "kusto-mcp",
       "netbox-mcp",
       "pipeline-scripts",
       "test-runner",
@@ -166,10 +172,11 @@ describe("repository test runner", () => {
   it("lists inventory without recursively invoking the suite", () => {
     const result = spawnSync(process.execPath, [runner, "--list"], { cwd: repoRoot, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /kusto-mcp \(5\)/);
     assert.match(result.stdout, /netbox-mcp \(5\)/);
     assert.match(result.stdout, /pipeline-scripts \(2\)/);
     assert.match(result.stdout, /test-runner \(1\)/);
-    assert.match(result.stdout, /total: 8/);
+    assert.match(result.stdout, /total: 13/);
   });
 
   it("rejects unknown arguments before running tests", () => {
