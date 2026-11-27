@@ -130,9 +130,9 @@ export function serveStdio({ dispatch, input = process.stdin, output = process.s
 }
 
 function tokenMatches(header, expected) {
-  const match = /^Bearer\s+(.+)$/i.exec(header ?? "");
-  if (!match) return false;
-  const given = Buffer.from(match[1].trim());
+  // No regex: CodeQL js/polynomial-redos flagged /^Bearer\s+(.+)$/ plus trim.
+  if (typeof header !== "string" || header.length > 8192 || header.slice(0, 7).toLowerCase() !== "bearer ") return false;
+  const given = Buffer.from(header.slice(7).trim());
   const wanted = Buffer.from(expected);
   return given.length === wanted.length && timingSafeEqual(given, wanted);
 }
