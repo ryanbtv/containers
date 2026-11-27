@@ -12,6 +12,12 @@ const TEST_FILE = new RegExp(`\\.test\\.(?:${TEST_EXTENSIONS.join("|")})$`);
 
 export const components = [
   {
+    name: "kusto-mcp",
+    cwd: "images/kusto-mcp",
+    testDirectories: ["test"],
+    coverageIncludes: ["server.mjs", "src/*.mjs"],
+  },
+  {
     name: "netbox-mcp",
     cwd: "images/netbox-mcp",
     testDirectories: ["test"],
